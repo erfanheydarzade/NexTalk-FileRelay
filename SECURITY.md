@@ -24,6 +24,11 @@ This project handles encrypted file transfers. Key security properties:
 - **Rate limiting**: Per-sender, per-mailbox, per-IP rate limits prevent abuse
 - **Bounded allocation**: All buffers are size-checked before allocation to prevent DoS
 
+These properties are enforced by the protocol implementation, but **the project
+has not undergone an independent security audit**. Treat the list above as a
+design intent and implementation claim, not as an audited assurance. If your
+threat model requires one, please open an issue to ask about commissioning.
+
 ## Security Best Practices for Users
 
 - Store `SERVER_SECRET` durably. Mailbox IDs are `HMAC-SHA256(SERVER_SECRET, pubkey)`, so **rotating it orphans every existing mailbox** — all in-flight transfers become unreachable. Keep it in a secret manager or environment-scoped secret storage, not in source control or image layers. It grants no access to message contents (the relay holds none) but does let an attacker predict mailbox IDs and impersonate the router's derivation.
