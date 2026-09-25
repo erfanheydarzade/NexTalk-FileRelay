@@ -55,3 +55,15 @@ jobs:
       # a theoretical one. Same suite as above, under the race detector.
       - name: Test (race detector)
         run: go test -race ./... -count=1
+
+      # Vulnerable-dependency gate. The action has no severity gate: govulncheck
+      # exits non-zero on any finding, so this fails the build on a reachable
+      # advisory. Given the dependency surface is a single module, that is
+      # actionable rather than noisy. Uses `repo-checkout: false` so it scans the
+      # working tree this job already checked out.
+      - name: Vulnerability scan (govulncheck)
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.25.0"
+          go-package: ./...
+          repo-checkout: false
