@@ -49,3 +49,9 @@ jobs:
 
       - name: Test
         run: go test ./... -v
+
+      # The relay is concurrent (per-op HTTP handlers over a shared store), so
+      # a data race in the store or replay cache is a real correctness bug, not
+      # a theoretical one. Same suite as above, under the race detector.
+      - name: Test (race detector)
+        run: go test -race ./... -count=1
