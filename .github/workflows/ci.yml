@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only: CI never needs to write to the repo, create releases, or push.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build, Vet & Test
