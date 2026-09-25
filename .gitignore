@@ -1,0 +1,50 @@
+# See https://www.gitignore.io/template/golang for the canonical Git ignore template.
+# Added by NexTalk-FileRelay to match our repo conventions.
+
+# Dependencies
+vendor/
+pkg/
+internal/vendor/
+
+# Build artifacts
+dist/
+bin/
+*.exe
+*.zip
+*.tar.gz
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage.out
+*.cov
+
+# Go build cache
+go-build/
+*.go.bak
+
+# Local development
+.env
+*.local
+
+# FileRelay bridge secrets/state (transports/filerelay) — see its README's
+# trust model: courier + per-mailbox scoped keys, never committed.
+*.key
+transfers.json
+
+# Packaged NexTalk transport bundles (transports/filerelay/package.sh|.ps1
+# output) — build these locally or via the release workflow, never commit.
+*.ntx
+
+filerelay-bridge
+filerelay-bridge.exe
+*.ntx
+*.zip

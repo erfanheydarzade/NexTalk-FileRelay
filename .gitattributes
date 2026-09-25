@@ -1,0 +1,7 @@
+# Git attributes for NexTalk-FileRelay
+*.go eol=lf
+*.md eol=lf
+*.yaml eol=lf
+*.yml eol=lf
+*.toml eol=lf
+*.txt eol=lf
