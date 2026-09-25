@@ -1,0 +1,16 @@
+{
+  "id": "filerelay",
+  "name": "FileRelay",
+  "version": "1.0.0",
+  "api_version": "1",
+  "entry": "filerelay-bridge.exe",
+  "capabilities": [
+    "message",
+    "binary-transfer"
+  ],
+  "permissions": [
+    "network",
+    "storage"
+  ],
+  "description": "FileRelay courier transport: carries opaque NexTalk frames as FileRelay messages under its own courier identity. Never sees user keys."
+}
