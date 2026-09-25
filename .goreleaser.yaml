@@ -60,11 +60,11 @@ archives:
 # native binary extension (.exe on Windows) is appended automatically.
 release:
   extra_files:
-    - glob: ./dist/nextalk-file-relay_{{ .Version }}_linux_amd64/nextalk-file-relay
+    - glob: ./dist/nextalk-file-relay_linux_amd64*/nextalk-file-relay
       name_template: nextalk-file-relay_{{ .Version }}_linux_amd64
-    - glob: ./dist/nextalk-file-relay_{{ .Version }}_darwin_amd64/nextalk-file-relay
+    - glob: ./dist/nextalk-file-relay_darwin_amd64*/nextalk-file-relay
       name_template: nextalk-file-relay_{{ .Version }}_darwin_amd64
-    - glob: ./dist/nextalk-file-relay_{{ .Version }}_linux_arm64/nextalk-file-relay
+    - glob: ./dist/nextalk-file-relay_linux_arm64*/nextalk-file-relay
       name_template: nextalk-file-relay_{{ .Version }}_linux_arm64
-    - glob: ./dist/nextalk-file-relay_{{ .Version }}_darwin_arm64/nextalk-file-relay
+    - glob: ./dist/nextalk-file-relay_darwin_arm64*/nextalk-file-relay
       name_template: nextalk-file-relay_{{ .Version }}_darwin_arm64
