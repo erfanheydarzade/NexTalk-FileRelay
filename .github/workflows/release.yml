@@ -8,6 +8,11 @@ on:
         description: "Version to release, e.g. v1.4.0 or v1.4.0-rc.1"
         required: true
         type: string
+      prerelease:
+        description: "Mark this release as a pre-release"
+        required: false
+        default: false
+        type: boolean
 
   push:
     tags:
@@ -20,30 +25,40 @@ jobs:
   prepare:
     name: Prepare release
     runs-on: ubuntu-latest
+
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
-      - name: Resolve release tag
+      - name: Resolve version
         id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            TAG="${{ inputs.version }}"
+            TAG="${INPUT_VERSION}"
+            PRERELEASE="${INPUT_PRERELEASE:-false}"
           else
             TAG="${GITHUB_REF_NAME}"
+            PRERELEASE="false"
           fi
 
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Invalid release tag: $TAG"
+            echo "::error::Invalid version: $TAG"
             echo "::error::Expected format: v1.4.0 or v1.4.0-rc.1"
             exit 1
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
           echo "Release tag: $TAG"
+          echo "Pre-release: $PRERELEASE"
 
       - name: Checkout repository
         if: github.event_name == 'workflow_dispatch'
@@ -51,12 +66,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create and push tag
+      - name: Create release tag
         if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           TAG: ${{ steps.version.outputs.tag }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -68,7 +82,7 @@ jobs:
           else
             git tag "$TAG"
             git push origin "$TAG"
-            echo "Created and pushed tag $TAG."
+            echo "Created tag $TAG."
           fi
 
   release:
@@ -77,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -98,18 +112,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Mark release as pre-release
+        if: needs.prepare.outputs.prerelease == 'true'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh release edit "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease
+
   package-bridge:
     name: Package filerelay .ntx bridge
     needs:
       - prepare
       - release
+
     runs-on: ubuntu-latest
 
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -123,6 +151,7 @@ jobs:
 
       - name: Vet and test bridge
         working-directory: transports/filerelay
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -170,18 +199,18 @@ jobs:
               GOARCH="$GOARCH" \
               GOARM="$GOARM" \
               CGO_ENABLED=0 \
-                go build \
-                  -ldflags "$LDFLAGS" \
-                  -o "$ENTRY" \
-                  ./bridge
+              go build \
+                -ldflags "$LDFLAGS" \
+                -o "$ENTRY" \
+                ./bridge
             else
               GOOS="$GOOS" \
               GOARCH="$GOARCH" \
               CGO_ENABLED=0 \
-                go build \
-                  -ldflags "$LDFLAGS" \
-                  -o "$ENTRY" \
-                  ./bridge
+              go build \
+                -ldflags "$LDFLAGS" \
+                -o "$ENTRY" \
+                ./bridge
             fi
 
             rm -rf .ntx-stage
@@ -223,17 +252,17 @@ jobs:
 
           cat filerelay-bridge_checksums.txt
 
-      - name: Upload bridge bundles to GitHub Release
+      - name: Upload bridge bundles
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           gh release upload \
-            "${{ needs.prepare.outputs.tag }}" \
+            "$TAG" \
             dist/filerelay-bridge_*.ntx \
             dist/filerelay-bridge_checksums.txt \
-            --repo "${{ github.repository }}" \
+            --repo "${GITHUB_REPOSITORY}" \
             --clobber
 ```
