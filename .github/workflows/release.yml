@@ -1,33 +1,14 @@
+```yaml
 name: Release
 
-# Push a button instead of tagging-and-waiting: run this from the Actions
-# tab (Run workflow) and choose a version. It tags that version, builds
-# nextalk-file-relay for every supported OS/arch as .tar.gz/.zip archives,
-# packages the filerelay bridge transport as installable .ntx bundles for
-# every supported OS/arch, and publishes everything as one GitHub Release
-# with an auto-generated changelog.
-#
-# Re-running this workflow for a version that's already released is safe:
-# the "Tag release" step is a no-op if the tag already exists, goreleaser +
-# the release action simply update the existing release's assets/notes
-# rather than failing, and the .ntx upload step uses --clobber so re-running
-# overwrites the previous .ntx assets instead of erroring on "already exists".
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: >-
-          Version to release, e.g. v1.4.0 (must start with "v" and follow
-          semver). Leave the "prerelease" box checked for a beta/rc build.
+        description: "Version to release, e.g. v1.4.0 or v1.4.0-rc.1"
         required: true
         type: string
-      prerelease:
-        description: "Mark this as a pre-release (not shown as 'latest')"
-        required: false
-        type: boolean
-        default: false
-  # Also supports the traditional `git tag vX.Y.Z && git push --tags` flow
-  # for anyone who prefers that over the manual button.
+
   push:
     tags:
       - "v*.*.*"
@@ -36,43 +17,71 @@ permissions:
   contents: write
 
 jobs:
-  tag:
-    name: Tag release
+  prepare:
+    name: Prepare release
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     outputs:
-      tag: ${{ steps.resolve.outputs.tag }}
+      tag: ${{ steps.version.outputs.tag }}
+
     steps:
-      - name: Validate version input
-        id: resolve
+      - name: Resolve release tag
+        id: version
+        shell: bash
         run: |
-          version="${{ inputs.version }}"
-          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::'$version' is not a valid semver tag (expected e.g. v1.4.0 or v1.4.0-rc.1)"
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.version }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release tag: $TAG"
+            echo "::error::Expected format: v1.4.0 or v1.4.0-rc.1"
             exit 1
           fi
-          echo "tag=$version" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Checkout repository
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Create and push tag (no-op if it already exists)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f "$TAG" || true
-          git push origin "$TAG"
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
         env:
-          TAG: ${{ steps.resolve.outputs.tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG."
+          fi
 
   release:
     name: Publish release
-    needs: [tag]
+    needs: prepare
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -91,15 +100,20 @@ jobs:
 
   package-bridge:
     name: Package filerelay .ntx bridge
-    needs: [tag, release]
+    needs:
+      - prepare
+      - release
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+
     env:
-      # workflow_dispatch resolves the tag via the "tag" job; the
-      # push-tag trigger skips that job, so fall back to the ref name.
-      TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -107,79 +121,119 @@ jobs:
           go-version: "1.25.0"
           cache: true
 
-      - name: Vet & test the bridge (package.sh/.ps1 refuse to package on failure — mirror that here)
-        working-directory: transports/filerelay
-        run: |
-          go vet ./bridge/...
-          go test ./bridge/... -count=1
-
-      - name: Cross-compile filerelay-bridge and package one .ntx per OS/arch
+      - name: Vet and test bridge
         working-directory: transports/filerelay
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
 
-          # The bridge doesn't import internal/buildinfo (that's the
-          # server's version hook), so there's nothing to -X inject here;
-          # -s -w alone strips symbols/DWARF to shrink the binary. The
-          # bridge's own version identity is the manifest.json "version"
-          # field stamped below.
+          go vet ./bridge/...
+          go test ./bridge/... -count=1
+
+      - name: Cross-compile and package .ntx bundles
+        working-directory: transports/filerelay
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${TAG#v}"
           LDFLAGS="-s -w"
 
           DIST="$(git rev-parse --show-toplevel)/dist"
           mkdir -p "$DIST"
 
-          # Same OS/arch matrix as .goreleaser.yaml's server build, minus the
-          # combinations goreleaser itself ignores (darwin/arm, windows/arm,
-          # windows/arm64).
           targets=(
-            "linux amd64 "
-            "linux arm64 "
+            "linux amd64"
+            "linux arm64"
             "linux arm 7"
-            "darwin amd64 "
-            "darwin arm64 "
-            "windows amd64 "
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
           )
 
-          for t in "${targets[@]}"; do
-            read -r goos goarch goarm <<< "$t"
+          for target in "${targets[@]}"; do
+            read -r GOOS GOARCH GOARM <<< "$target"
 
-            entry="filerelay-bridge"
-            manifest="manifest.json"
-            [ "$goos" = "windows" ] && entry="filerelay-bridge.exe" && manifest="manifest.windows.json"
+            ENTRY="filerelay-bridge"
+            MANIFEST="manifest.json"
 
-            echo "==> build $goos/$goarch${goarm:+v$goarm}"
-            rm -f "$entry"
-            GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" CGO_ENABLED=0 \
-              go build -ldflags "$LDFLAGS" -o "$entry" ./bridge
+            if [[ "$GOOS" == "windows" ]]; then
+              ENTRY="filerelay-bridge.exe"
+              MANIFEST="manifest.windows.json"
+            fi
 
-            # Stage into manifest.json + entry binary at the archive root
-            # (the installed .ntx layout package.sh/.ps1 use), with the
-            # manifest's "version" stamped to this release's tag instead
-            # of shipping the 1.0.0 placeholder committed in the repo.
-            # Staged in a scratch dir so the tracked manifest files are
-            # never modified in place.
-            rm -rf .ntx-stage && mkdir .ntx-stage
-            sed "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" "$manifest" > .ntx-stage/manifest.json
-            cp "$entry" .ntx-stage/
+            echo "==> Building ${GOOS}/${GOARCH}${GOARM:+v${GOARM}}"
 
-            suffix="${goos}_${goarch}${goarm:+v$goarm}"
-            ntx="$DIST/filerelay-bridge_${VERSION}_${suffix}.ntx"
-            rm -f "$ntx"
-            (cd .ntx-stage && zip -j "$ntx" manifest.json "$entry")
-            rm -rf .ntx-stage "$entry"
-            echo "packaged: $ntx"
+            rm -f "$ENTRY"
+
+            if [[ -n "${GOARM:-}" ]]; then
+              GOOS="$GOOS" \
+              GOARCH="$GOARCH" \
+              GOARM="$GOARM" \
+              CGO_ENABLED=0 \
+                go build \
+                  -ldflags "$LDFLAGS" \
+                  -o "$ENTRY" \
+                  ./bridge
+            else
+              GOOS="$GOOS" \
+              GOARCH="$GOARCH" \
+              CGO_ENABLED=0 \
+                go build \
+                  -ldflags "$LDFLAGS" \
+                  -o "$ENTRY" \
+                  ./bridge
+            fi
+
+            rm -rf .ntx-stage
+            mkdir -p .ntx-stage
+
+            sed \
+              "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" \
+              "$MANIFEST" \
+              > .ntx-stage/manifest.json
+
+            cp "$ENTRY" .ntx-stage/
+
+            SUFFIX="${GOOS}_${GOARCH}${GOARM:+v${GOARM}}"
+            NTX="$DIST/filerelay-bridge_${VERSION}_${SUFFIX}.ntx"
+
+            rm -f "$NTX"
+
+            (
+              cd .ntx-stage
+              zip -j "$NTX" manifest.json "$ENTRY"
+            )
+
+            rm -rf .ntx-stage "$ENTRY"
+
+            echo "Packaged: $NTX"
           done
 
-          ls -la "$DIST"
+          ls -lah "$DIST"
 
-      - name: Checksums for the .ntx bundles
+      - name: Generate bridge checksums
         working-directory: dist
-        run: sha256sum filerelay-bridge_*.ntx > filerelay-bridge_checksums.txt
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Upload .ntx bundles to the release
+          sha256sum \
+            filerelay-bridge_*.ntx \
+            > filerelay-bridge_checksums.txt
+
+          cat filerelay-bridge_checksums.txt
+
+      - name: Upload bridge bundles to GitHub Release
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$TAG" dist/filerelay-bridge_*.ntx dist/filerelay-bridge_checksums.txt \
-            --repo "${{ github.repository }}" --clobber
+          set -euo pipefail
+
+          gh release upload \
+            "${{ needs.prepare.outputs.tag }}" \
+            dist/filerelay-bridge_*.ntx \
+            dist/filerelay-bridge_checksums.txt \
+            --repo "${{ github.repository }}" \
+            --clobber
+```
