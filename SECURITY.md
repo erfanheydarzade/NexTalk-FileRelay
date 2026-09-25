@@ -11,7 +11,7 @@
 We take security seriously. If you discover a security vulnerability, please:
 
 1. **Do NOT open a public issue.**
-2. Email the maintainers at the email on file with the GitHub account associated with this repository.
+2. Report it privately through [GitHub Security Advisories](https://github.com/erfanheydarzade/NexTalk-FileRelay/security/advisories/new) ("Report a vulnerability" on the Security tab).
 3. Include steps to reproduce and any relevant proof-of-concept code.
 
 ## Security Considerations
