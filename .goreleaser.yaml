@@ -58,12 +58,13 @@ archives:
 # Raw, unpacked binary for people who'd rather download-and-run than
 # download-extract-move. Same naming scheme as the archive above; the
 # native binary extension (.exe on Windows) is appended automatically.
-extra_assets:
-  - path: ./dist/nextalk-file-relay_{{ .Version }}_linux_amd64/nextalk-file-relay
-    name_template: nextalk-file-relay_{{ .Version }}_linux_amd64
-  - path: ./dist/nextalk-file-relay_{{ .Version }}_darwin_amd64/nextalk-file-relay
-    name_template: nextalk-file-relay_{{ .Version }}_darwin_amd64
-  - path: ./dist/nextalk-file-relay_{{ .Version }}_linux_arm64/nextalk-file-relay
-    name_template: nextalk-file-relay_{{ .Version }}_linux_arm64
-  - path: ./dist/nextalk-file-relay_{{ .Version }}_darwin_arm64/nextalk-file-relay
-    name_template: nextalk-file-relay_{{ .Version }}_darwin_arm64
+release:
+  extra_files:
+    - glob: ./dist/nextalk-file-relay_{{ .Version }}_linux_amd64/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_linux_amd64
+    - glob: ./dist/nextalk-file-relay_{{ .Version }}_darwin_amd64/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_darwin_amd64
+    - glob: ./dist/nextalk-file-relay_{{ .Version }}_linux_arm64/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_linux_arm64
+    - glob: ./dist/nextalk-file-relay_{{ .Version }}_darwin_arm64/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_darwin_arm64
