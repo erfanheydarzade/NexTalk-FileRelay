@@ -1,4 +1,3 @@
-```yaml
 name: Release
 
 on:
@@ -231,4 +230,3 @@ jobs:
             dist/filerelay-bridge_checksums.txt \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
-```
