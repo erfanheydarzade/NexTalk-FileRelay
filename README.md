@@ -13,6 +13,10 @@ chunked file transfers, and a full authentication/replay/quota model. See
 [`DESIGN.md`](DESIGN.md) for the architecture and rationale, and
 [`docs/server.md`](docs/server.md) for the deployed HTTP API reference.
 
+> **Security status:** the protocol's security properties are enforced by this
+> implementation, but the project **has not undergone an independent security
+> audit**. "Secure" here is a design claim, not an audited assurance.
+
 ## Architecture
 
 Two processes serve the protocol:
