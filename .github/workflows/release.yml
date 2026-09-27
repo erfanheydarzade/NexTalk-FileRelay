@@ -588,7 +588,19 @@ jobs:
         run: |
           set +e
 
-          echo "A draft release was created by this run and the workflow did not complete."
-          echo "Cleaning up draft release $TAG and its tag."
+          release_json="$(gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json isDraft,isImmutable 2>/dev/null)"
 
-          gh release delete "$TAG"             --repo "${GITHUB_REPOSITORY}"             --yes             --cleanup-tag || true
+          if [[ -z "$release_json" ]]; then
+            echo "Release $TAG is not readable; nothing safe to clean up."
+            exit 0
+          fi
+
+          is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+          is_immutable="$(jq -r '.isImmutable' <<< "$release_json")"
+
+          if [[ "$is_draft" == "true" && "$is_immutable" != "true" ]]; then
+            echo "Cleaning up draft release $TAG and its tag."
+            gh release delete "$TAG" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
+          else
+            echo "Release $TAG is already published or immutable; refusing destructive cleanup."
+          fi
