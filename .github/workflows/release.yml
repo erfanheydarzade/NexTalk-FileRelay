@@ -29,7 +29,6 @@ jobs:
     env:
       TAG: ${{ inputs.version }}
       PRERELEASE: ${{ inputs.prerelease }}
-      BRIDGE_DIST: ${{ runner.temp }}/nextalk-filerelay-bridge-dist
 
     steps:
       - name: Validate version
@@ -79,7 +78,7 @@ jobs:
           VERSION="${TAG#v}"
           LDFLAGS="-s -w"
 
-          DIST="$BRIDGE_DIST"
+          DIST="$RUNNER_TEMP/nextalk-filerelay-bridge-dist"
 
           rm -rf "$DIST"
           mkdir -p "$DIST"
@@ -171,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          cd "$BRIDGE_DIST"
+          cd "$RUNNER_TEMP/nextalk-filerelay-bridge-dist"
 
           sha256sum \
             filerelay-bridge_*.ntx \
@@ -187,7 +186,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          count="$(find "$BRIDGE_DIST" \
+          count="$(find "$RUNNER_TEMP/nextalk-filerelay-bridge-dist" \
             -maxdepth 1 \
             -type f \
             -name 'filerelay-bridge_*.ntx' \
@@ -195,7 +194,7 @@ jobs:
 
           if [[ "$count" -ne 6 ]]; then
             echo "::error::Expected 6 .ntx bundles, found $count."
-            find "$BRIDGE_DIST" -maxdepth 1 -type f -print
+            find "$RUNNER_TEMP/nextalk-filerelay-bridge-dist" -maxdepth 1 -type f -print
             exit 1
           fi
 
@@ -344,7 +343,7 @@ jobs:
           set -euo pipefail
 
           mapfile -t BRIDGE_ASSETS < <(
-            find "$BRIDGE_DIST" -maxdepth 1 -type f \
+            find "$RUNNER_TEMP/nextalk-filerelay-bridge-dist" -maxdepth 1 -type f \
               \( -name '*.ntx' -o -name 'filerelay-bridge_checksums.txt' \) \
               -print \
               | sort
