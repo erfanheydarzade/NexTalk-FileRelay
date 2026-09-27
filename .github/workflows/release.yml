@@ -35,7 +35,6 @@ jobs:
       PRERELEASE: ${{ inputs.prerelease }}
       GO_VERSION: "1.25.14"
       GORELEASER_VERSION: "v2.18.2"
-      BRIDGE_DIST: ${{ runner.temp }}/nextalk-filerelay-bridge-dist
 
     steps:
       - name: Validate version
@@ -199,6 +198,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export BRIDGE_DIST="$RUNNER_TEMP/nextalk-filerelay-bridge-dist"
+          echo "BRIDGE_DIST=$BRIDGE_DIST" >> "$GITHUB_ENV"
+
           rm -rf "$BRIDGE_DIST"
           mkdir -p "$BRIDGE_DIST"
 
@@ -301,6 +303,17 @@ jobs:
 
           goreleaser check
 
+      - name: Verify repository is clean before GoReleaser
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Release preparation modified the Git worktree."
+            git status --short
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -348,6 +361,17 @@ jobs:
           tar -tzf "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz" >/dev/null
           unzip -tq "nextalk-file-relay_${VERSION}_windows_amd64.zip"
 
+      - name: Verify repository is clean after GoReleaser
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::GoReleaser left tracked or untracked changes in the Git worktree."
+            git status --short
+            exit 1
+          fi
+
       - name: Generate artifact attestations
         uses: actions/attest@v4
         with:
@@ -383,7 +407,9 @@ jobs:
             test -s "$asset"
           done
 
-          gh release upload "$TAG" "${assets[@]}"             --repo "${GITHUB_REPOSITORY}"
+          gh release upload "$TAG" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
 
       - name: Upload .ntx bridge assets to draft release
         shell: bash
@@ -406,7 +432,9 @@ jobs:
             test -s "$asset"
           done
 
-          gh release upload "$TAG" "${assets[@]}"             --repo "${GITHUB_REPOSITORY}"
+          gh release upload "$TAG" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
 
       - name: Verify draft release asset inventory
         shell: bash
