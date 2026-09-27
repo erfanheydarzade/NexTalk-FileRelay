@@ -8,10 +8,6 @@
 version: 2
 project_name: nextalk-file-relay
 
-before:
-  hooks:
-    - go mod tidy
-
 builds:
   - id: nextalk-file-relay
     main: ./cmd/filerelayd
@@ -41,6 +37,19 @@ builds:
         goarch: arm
       - goos: windows
         goarch: arm64
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  extra_files:
+    - glob: ./dist/nextalk-file-relay_linux_amd64*/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_linux_amd64
+    - glob: ./dist/nextalk-file-relay_darwin_amd64*/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_darwin_amd64
+    - glob: ./dist/nextalk-file-relay_linux_arm64*/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_linux_arm64
+    - glob: ./dist/nextalk-file-relay_darwin_arm64*/nextalk-file-relay
+      name_template: nextalk-file-relay_{{ .Version }}_darwin_arm64
 
 archives:
   - id: nextalk-file-relay-archive
