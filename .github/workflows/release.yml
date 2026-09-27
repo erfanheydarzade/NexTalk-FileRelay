@@ -213,19 +213,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists."
+            echo "Tag $TAG already exists; it will not be modified."
 
             git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
 
-            CURRENT_SHA="$(git rev-parse HEAD)"
             TAG_SHA="$(git rev-list -n 1 "$TAG")"
-
-            if [[ "$CURRENT_SHA" != "$TAG_SHA" ]]; then
-              echo "::error::Tag $TAG already exists but points to a different commit."
-              echo "::error::Current commit: $CURRENT_SHA"
-              echo "::error::Tag commit:     $TAG_SHA"
-              exit 1
-            fi
+            echo "Using existing tag $TAG at $TAG_SHA."
           else
             git tag "$TAG"
             git push origin "$TAG"
