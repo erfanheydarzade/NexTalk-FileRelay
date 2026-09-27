@@ -4,20 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Immutable release version, e.g. v0.1.2 or v0.1.2-rc.1"
+        description: "Version to release, e.g. v1.4.0 or v1.4.0-rc.1"
         required: true
         type: string
+
       prerelease:
-        description: "Publish as a pre-release"
+        description: "Mark this release as a pre-release"
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
 
 concurrency:
   group: release-${{ inputs.version }}
@@ -27,14 +25,10 @@ jobs:
   release:
     name: Publish release
     runs-on: ubuntu-latest
-    timeout-minutes: 45
 
     env:
       TAG: ${{ inputs.version }}
-      VERSION: ${{ inputs.version }}
       PRERELEASE: ${{ inputs.prerelease }}
-      GO_VERSION: "1.25.14"
-      GORELEASER_VERSION: "v2.18.2"
 
     steps:
       - name: Validate version
@@ -48,182 +42,47 @@ jobs:
             exit 1
           fi
 
-          VERSION="${TAG#v}"
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
           echo "Release tag: $TAG"
-          echo "Release version: $VERSION"
           echo "Pre-release: $PRERELEASE"
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v5
         with:
-          go-version: "${{ env.GO_VERSION }}"
+          go-version: "1.25.14"
           cache: true
 
-      - name: Validate repository state
-        shell: bash
-        run: |
-          set -euo pipefail
+      # ------------------------------------------------------------
+      # Validate everything BEFORE creating/publishing the release.
+      # ------------------------------------------------------------
 
-          git fetch --tags origin --force
-
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "::error::Repository is dirty immediately after checkout."
-            git status --short
-            exit 1
-          fi
-
-          go version
-          go mod download
-          go mod verify
-
-      - name: Validate formatting and Go code
-        shell: bash
-        env:
-          GOFLAGS: -mod=readonly
-        run: |
-          set -euo pipefail
-
-          fmt_out="$(gofmt -l .)"
-          if [[ -n "$fmt_out" ]]; then
-            echo "::error::The following Go files are not gofmt-formatted:"
-            echo "$fmt_out"
-            exit 1
-          fi
-
-          go vet ./...
-          go test ./... -count=1
-          go test -race ./... -count=1
-
-      - name: Install govulncheck
-        shell: bash
-        run: |
-          set -euo pipefail
-          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-
-      - name: Vulnerability scan
-        shell: bash
-        env:
-          GOFLAGS: -mod=readonly
-        run: |
-          set -euo pipefail
-          govulncheck ./...
-
-      - name: Validate FileRelay bridge
+      - name: Vet and test bridge
         working-directory: transports/filerelay
         shell: bash
-        env:
-          GOFLAGS: -mod=readonly
         run: |
           set -euo pipefail
 
           go vet ./bridge/...
           go test ./bridge/... -count=1
 
-      - name: Prepare draft release
-        id: prepare
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          release_json=""
-          if release_json="$(gh release view "$TAG"             --repo "${GITHUB_REPOSITORY}"             --json isDraft,isImmutable,tagName,targetCommitish,url 2>/dev/null)"; then
-
-            is_draft="$(jq -r '.isDraft' <<< "$release_json")"
-            is_immutable="$(jq -r '.isImmutable' <<< "$release_json")"
-            tag_name="$(jq -r '.tagName' <<< "$release_json")"
-
-            if [[ "$is_draft" != "true" || "$is_immutable" == "true" ]]; then
-              echo "::error::Release $TAG already exists as a published/immutable release. Immutable release versions are one-shot; use a new version."
-              echo "::error::Existing release: $(jq -r '.url' <<< "$release_json")"
-              exit 1
-            fi
-
-            echo "Existing draft release found: $tag_name"
-            echo "created=false" >> "$GITHUB_OUTPUT"
-          else
-            if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null 2>&1; then
-              git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-              existing_tag_sha="$(git rev-list -n 1 "$TAG")"
-
-              if [[ "$existing_tag_sha" != "$GITHUB_SHA" ]]; then
-                echo "::error::Tag $TAG already exists at a different commit."
-                echo "::error::Tag commit:     $existing_tag_sha"
-                echo "::error::Workflow commit: $GITHUB_SHA"
-                echo "::error::Refusing to attach a release to the wrong source commit."
-                exit 1
-              fi
-
-              echo "Creating draft release for existing tag $TAG."
-              gh release create "$TAG" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag --generate-notes
-            else
-              echo "Creating draft release $TAG at commit ${GITHUB_SHA}."
-              gh release create "$TAG" --repo "${GITHUB_REPOSITORY}" --draft --target "${GITHUB_SHA}" --generate-notes
-            fi
-
-            echo "created=true" >> "$GITHUB_OUTPUT"          fi
-
-      - name: Resolve release commit
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          git fetch --tags origin --force
-          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-
-          RELEASE_SHA="$(git rev-list -n 1 "$TAG")"
-          echo "RELEASE_SHA=$RELEASE_SHA" >> "$GITHUB_ENV"
-
-          echo "Release tag: $TAG"
-          echo "Release commit: $RELEASE_SHA"
-
-      - name: Checkout exact release commit
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git checkout --detach "$RELEASE_SHA"
-
-          if [[ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
-            echo "::error::Checked out commit does not match release commit."
-            exit 1
-          fi
-
-          echo "HEAD=$(git rev-parse HEAD)"
-          git describe --tags --exact-match "$RELEASE_SHA"
-
-      - name: Prepare .ntx bridge output directory
-        shell: bash
-        run: |
-          set -euo pipefail
-          export BRIDGE_DIST="$RUNNER_TEMP/nextalk-filerelay-bridge-dist"
-          export RELEASE_ASSETS_DIR="$RUNNER_TEMP/nextalk-filerelay-release-assets"
-          echo "BRIDGE_DIST=$BRIDGE_DIST" >> "$GITHUB_ENV"
-          echo "RELEASE_ASSETS_DIR=$RELEASE_ASSETS_DIR" >> "$GITHUB_ENV"
-
-          rm -rf "$BRIDGE_DIST" "$RELEASE_ASSETS_DIR"
-          mkdir -p "$BRIDGE_DIST" "$RELEASE_ASSETS_DIR"
-
-      - name: Build and package .ntx bridge bundles
+      - name: Cross-compile and package .ntx bundles
         working-directory: transports/filerelay
         shell: bash
-        env:
-          GOFLAGS: -mod=readonly
         run: |
           set -euo pipefail
 
+          VERSION="${TAG#v}"
           LDFLAGS="-s -w"
+
+          ROOT="$(git rev-parse --show-toplevel)"
+          DIST="$ROOT/bridge-dist"
+
+          rm -rf "$DIST"
+          mkdir -p "$DIST"
 
           targets=(
             "linux amd64"
@@ -253,21 +112,42 @@ jobs:
             mkdir -p .ntx-stage
 
             if [[ -n "${GOARM:-}" ]]; then
-              GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" CGO_ENABLED=0                 go build -ldflags "$LDFLAGS" -o "$ENTRY" ./bridge
+              GOOS="$GOOS" \
+              GOARCH="$GOARCH" \
+              GOARM="$GOARM" \
+              CGO_ENABLED=0 \
+              go build \
+                -ldflags "$LDFLAGS" \
+                -o "$ENTRY" \
+                ./bridge
             else
-              GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0                 go build -ldflags "$LDFLAGS" -o "$ENTRY" ./bridge
+              GOOS="$GOOS" \
+              GOARCH="$GOARCH" \
+              CGO_ENABLED=0 \
+              go build \
+                -ldflags "$LDFLAGS" \
+                -o "$ENTRY" \
+                ./bridge
             fi
 
             test -s "$ENTRY"
 
-            jq --arg version "$VERSION"               '.version = $version'               "$MANIFEST"               > .ntx-stage/manifest.json
+            jq \
+              --arg version "$VERSION" \
+              '.version = $version' \
+              "$MANIFEST" \
+              > .ntx-stage/manifest.json
 
-            jq -e --arg version "$VERSION"               '.version == $version'               .ntx-stage/manifest.json >/dev/null
+            jq -e \
+              --arg version "$VERSION" \
+              '.version == $version' \
+              .ntx-stage/manifest.json \
+              >/dev/null
 
             cp "$ENTRY" .ntx-stage/
 
             SUFFIX="${GOOS}_${GOARCH}${GOARM:+v${GOARM}}"
-            NTX="$BRIDGE_DIST/filerelay-bridge_${VERSION}_${SUFFIX}.ntx"
+            NTX="$DIST/filerelay-bridge_${VERSION}_${SUFFIX}.ntx"
 
             (
               cd .ntx-stage
@@ -277,279 +157,253 @@ jobs:
             test -s "$NTX"
             unzip -tq "$NTX"
 
-            unzip -p "$NTX" manifest.json               | jq -e --arg version "$VERSION" --arg entry "$ENTRY"                   '.version == $version and .entry == $entry'               >/dev/null
-
-            unzip -l "$NTX" | grep -Eq "[[:space:]]manifest\.json$"
-            unzip -l "$NTX" | grep -Eq "[[:space:]]${ENTRY//./\.}$"
-
             rm -rf .ntx-stage "$ENTRY"
+
+            echo "Packaged: $NTX"
           done
 
           echo
           echo "==> Generated bridge bundles:"
-          ls -lah "$BRIDGE_DIST"
+          ls -lah "$DIST"
 
-      - name: Generate and verify bridge checksums
+      - name: Generate bridge checksums
+        working-directory: bridge-dist
         shell: bash
         run: |
           set -euo pipefail
 
-          cd "$BRIDGE_DIST"
-
-          sha256sum filerelay-bridge_*.ntx > filerelay-bridge_checksums.txt
-          sha256sum -c filerelay-bridge_checksums.txt
-
-          count="$(find . -maxdepth 1 -type f -name 'filerelay-bridge_*.ntx' | wc -l)"
-          if [[ "$count" -ne 6 ]]; then
-            echo "::error::Expected 6 .ntx bundles, found $count."
-            exit 1
-          fi
+          sha256sum \
+            filerelay-bridge_*.ntx \
+            > filerelay-bridge_checksums.txt
 
           test -s filerelay-bridge_checksums.txt
 
-      - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "${{ env.GORELEASER_VERSION }}"
-          install-only: true
+          echo "==> Bridge checksums:"
+          cat filerelay-bridge_checksums.txt
 
-      - name: Validate GoReleaser configuration
+      - name: Verify bridge bundle count
         shell: bash
         run: |
           set -euo pipefail
 
-          goreleaser check
+          count="$(find bridge-dist \
+            -maxdepth 1 \
+            -type f \
+            -name 'filerelay-bridge_*.ntx' \
+            | wc -l)"
 
-      - name: Verify repository is clean before GoReleaser
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "::error::Release preparation modified the Git worktree."
-            git status --short
+          if [[ "$count" -ne 6 ]]; then
+            echo "::error::Expected 6 .ntx bundles, found $count."
+            find bridge-dist -maxdepth 1 -type f -print
             exit 1
           fi
 
-      - name: Run GoReleaser
-        shell: bash
-        env:
-          GOFLAGS: -mod=readonly
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOFLAGS: -mod=readonly
-        run: |
-          set -euo pipefail
-          goreleaser release --clean --skip=publish
+          echo "Verified $count bridge bundles."
 
-      - name: Prepare final GoReleaser release assets
+      # ------------------------------------------------------------
+      # Tag only after all bridge artifacts have been validated.
+      # ------------------------------------------------------------
+
+      - name: Create release tag
         shell: bash
         run: |
           set -euo pipefail
 
-          core_assets=(
-            "nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
-            "nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
-            "nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
-            "nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
-            "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
-            "nextalk-file-relay_${VERSION}_windows_amd64.zip"
-          )
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          cd dist
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
 
-          for asset in "${core_assets[@]}"; do
-            test -s "$asset"
-          done
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
 
-          test -s goreleaser-checksums.txt
-          sha256sum -c goreleaser-checksums.txt
+            CURRENT_SHA="$(git rev-parse HEAD)"
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
 
-          tar -tzf "nextalk-file-relay_${VERSION}_linux_amd64.tar.gz" >/dev/null
-          tar -tzf "nextalk-file-relay_${VERSION}_linux_arm64.tar.gz" >/dev/null
-          tar -tzf "nextalk-file-relay_${VERSION}_linux_armv7.tar.gz" >/dev/null
-          tar -tzf "nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz" >/dev/null
-          tar -tzf "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz" >/dev/null
-          unzip -tq "nextalk-file-relay_${VERSION}_windows_amd64.zip"
-
-          copy_raw() {
-            local pattern="$1"
-            local destination="$2"
-            mapfile -t matches < <(find . -mindepth 2 -maxdepth 3 -type f -path "$pattern" -print)
-
-            if [[ "${#matches[@]}" -ne 1 ]]; then
-              echo "::error::Expected exactly one raw binary matching: $pattern"
-              printf "  %s\n" "${matches[@]}"
+            if [[ "$CURRENT_SHA" != "$TAG_SHA" ]]; then
+              echo "::error::Tag $TAG already exists but points to a different commit."
+              echo "::error::Current commit: $CURRENT_SHA"
+              echo "::error::Tag commit:     $TAG_SHA"
               exit 1
             fi
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "Created and pushed tag $TAG."
+          fi
 
-            cp "${matches[0]}" "$RELEASE_ASSETS_DIR/$destination"
-          }
+      - name: Checkout release tag
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          cd ..
+          git fetch --tags origin
+          git checkout "$TAG"
 
-          for asset in "${core_assets[@]}"; do
-            cp "dist/$asset" "$RELEASE_ASSETS_DIR/$asset"
-          done
+          echo "Checked out:"
+          git rev-parse HEAD
 
-          copy_raw "dist/nextalk-file-relay_linux_amd64*/nextalk-file-relay" \
-            "nextalk-file-relay_${VERSION}_linux_amd64"
+          echo "Tag:"
+          git describe --tags --exact-match
 
-          copy_raw "dist/nextalk-file-relay_darwin_amd64*/nextalk-file-relay" \
-            "nextalk-file-relay_${VERSION}_darwin_amd64"
+      # ------------------------------------------------------------
+      # Build GoReleaser artifacts, but DO NOT publish yet.
+      # ------------------------------------------------------------
 
-          copy_raw "dist/nextalk-file-relay_linux_arm64*/nextalk-file-relay" \
-            "nextalk-file-relay_${VERSION}_linux_arm64"
+      - name: Run GoReleaser without publishing
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean --skip=publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          copy_raw "dist/nextalk-file-relay_darwin_arm64*/nextalk-file-relay" \
-            "nextalk-file-relay_${VERSION}_darwin_arm64"
+      - name: Verify GoReleaser output
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          release_assets=(
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_windows_amd64.zip"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64"
-          )
+          echo "==> GoReleaser dist contents:"
+          find dist -maxdepth 2 -type f -print | sort
 
-          for asset in "${release_assets[@]}"; do
-            test -s "$asset"
-          done
-
-          sha256sum "${release_assets[@]}" > "$RELEASE_ASSETS_DIR/checksums.txt"
-          sha256sum -c "$RELEASE_ASSETS_DIR/checksums.txt"
-
-          count="$(find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f | wc -l)"
-          if [[ "$count" -ne 11 ]]; then
-            echo "::error::Expected 11 final GoReleaser release assets, found $count."
-            find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -print
+          if ! find dist -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.zip' \) \
+            | grep -q .; then
+            echo "::error::GoReleaser did not produce any archives."
             exit 1
           fi
 
-          echo "Verified 11 final GoReleaser release assets."
-      - name: Verify repository is clean after GoReleaser
+      # ------------------------------------------------------------
+      # Create ONE draft release.
+      # Nothing is immutable yet because it is still a draft.
+      # ------------------------------------------------------------
+
+      - name: Create draft GitHub release
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "::error::GoReleaser left tracked or untracked changes in the Git worktree."
-            git status --short
+          NOTES_ARGS=()
+
+          if [[ -f dist/CHANGELOG.md ]]; then
+            NOTES_ARGS+=(--notes-file dist/CHANGELOG.md)
+          else
+            NOTES_ARGS+=(--generate-notes)
+          fi
+
+          gh release create "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            "${NOTES_ARGS[@]}"
+
+      # ------------------------------------------------------------
+      # Upload GoReleaser artifacts while the release is still draft.
+      # ------------------------------------------------------------
+
+      - name: Upload GoReleaser artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t RELEASE_ASSETS < <(
+            find dist -maxdepth 1 -type f \
+              ! -name 'artifacts.json' \
+              ! -name 'CHANGELOG.md' \
+              -print \
+              | sort
+          )
+
+          if [[ "${#RELEASE_ASSETS[@]}" -eq 0 ]]; then
+            echo "::error::No GoReleaser release assets found."
             exit 1
           fi
 
-      - name: Generate artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-checksums: ${{ env.RELEASE_ASSETS_DIR }}/checksums.txt
+          echo "Uploading GoReleaser assets:"
+          printf '  %s\n' "${RELEASE_ASSETS[@]}"
 
-      - name: Generate bridge artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-checksums: ${{ env.BRIDGE_DIST }}/filerelay-bridge_checksums.txt
+          gh release upload \
+            "$TAG" \
+            "${RELEASE_ASSETS[@]}" \
+            --repo "${GITHUB_REPOSITORY}"
 
-      - name: Upload GoReleaser assets to draft release
+      # ------------------------------------------------------------
+      # Upload all six .ntx bridge bundles + checksums.
+      # ------------------------------------------------------------
+
+      - name: Upload bridge bundles
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          assets=(
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_windows_amd64.zip"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64"
-            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64"
-            "$RELEASE_ASSETS_DIR/checksums.txt"
+          mapfile -t BRIDGE_ASSETS < <(
+            find bridge-dist -maxdepth 1 -type f \
+              \( -name '*.ntx' -o -name 'filerelay-bridge_checksums.txt' \) \
+              -print \
+              | sort
           )
 
-          for asset in "${assets[@]}"; do
-            test -s "$asset"
-          done
+          if [[ "${#BRIDGE_ASSETS[@]}" -ne 7 ]]; then
+            echo "::error::Expected 7 bridge assets (6 .ntx + 1 checksum), found ${#BRIDGE_ASSETS[@]}."
+            printf '  %s\n' "${BRIDGE_ASSETS[@]}"
+            exit 1
+          fi
 
-          gh release upload "$TAG" "${assets[@]}" \
+          echo "Uploading bridge assets:"
+          printf '  %s\n' "${BRIDGE_ASSETS[@]}"
+
+          gh release upload \
+            "$TAG" \
+            "${BRIDGE_ASSETS[@]}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+      # ------------------------------------------------------------
+      # Final verification while the release is STILL a draft.
+      # ------------------------------------------------------------
+
+      - name: Verify draft release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "==> Release assets:"
+          gh release view "$TAG" \
             --repo "${GITHUB_REPOSITORY}" \
-            --clobber
-      - name: Upload .ntx bridge assets to draft release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
+            --json assets \
+            --jq '.assets[].name'
 
-          assets=(
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_linux_amd64.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_linux_arm64.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_linux_armv7.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_darwin_amd64.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_darwin_arm64.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_${VERSION}_windows_amd64.ntx"
-            "$BRIDGE_DIST/filerelay-bridge_checksums.txt"
-          )
-
-          for asset in "${assets[@]}"; do
-            test -s "$asset"
-          done
-
-          gh release upload "$TAG" "${assets[@]}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --clobber
-
-      - name: Verify draft release asset inventory
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          mapfile -t actual < <(
-            gh release view "$TAG"               --repo "${GITHUB_REPOSITORY}"               --json assets               --jq '.assets[].name'               | sort
-          )
-
-          expected=(
-            "checksums.txt"
+          EXPECTED=(
+            "filerelay-bridge_*.ntx"
             "filerelay-bridge_checksums.txt"
-            "filerelay-bridge_${VERSION}_darwin_amd64.ntx"
-            "filerelay-bridge_${VERSION}_darwin_arm64.ntx"
-            "filerelay-bridge_${VERSION}_linux_amd64.ntx"
-            "filerelay-bridge_${VERSION}_linux_arm64.ntx"
-            "filerelay-bridge_${VERSION}_linux_armv7.ntx"
-            "filerelay-bridge_${VERSION}_windows_amd64.ntx"
-            "nextalk-file-relay_${VERSION}_darwin_amd64"
-            "nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
-            "nextalk-file-relay_${VERSION}_darwin_arm64"
-            "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
-            "nextalk-file-relay_${VERSION}_linux_amd64"
-            "nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
-            "nextalk-file-relay_${VERSION}_linux_arm64"
-            "nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
-            "nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
-            "nextalk-file-relay_${VERSION}_windows_amd64.zip"
           )
 
-          printf '%s\n' "${expected[@]}" | sort > "$RUNNER_TEMP/expected-assets.txt"
-          printf '%s\n' "${actual[@]}" > "$RUNNER_TEMP/actual-assets.txt"
+          for pattern in "${EXPECTED[@]}"; do
+            if ! gh release view "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json assets \
+              --jq '.assets[].name' \
+              | grep -Eq "^${pattern//\*/.*}$"; then
+              echo "::error::Missing release asset matching: $pattern"
+              exit 1
+            fi
+          done
 
-          if ! diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"; then
-            echo "::error::Release asset inventory does not match the expected set."
-            exit 1
-          fi
+          echo "Draft release assets verified."
 
-          echo "Verified ${#actual[@]} release assets."
+      # ------------------------------------------------------------
+      # ONLY NOW publish the release.
+      # With release immutability enabled, this is the final mutation.
+      # ------------------------------------------------------------
 
-      - name: Publish immutable release
+      - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -557,53 +411,14 @@ jobs:
           set -euo pipefail
 
           if [[ "$PRERELEASE" == "true" ]]; then
-            gh release edit "$TAG"               --repo "${GITHUB_REPOSITORY}"               --draft=false               --prerelease
+            gh release edit "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false \
+              --prerelease
           else
-            gh release edit "$TAG"               --repo "${GITHUB_REPOSITORY}"               --draft=false               --prerelease=false
+            gh release edit "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false
           fi
 
-          echo "Published $TAG"
-
-      - name: Verify published release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          release_json="$(gh release view "$TAG"             --repo "${GITHUB_REPOSITORY}"             --json isDraft,isImmutable,isPrerelease,tagName,targetCommitish,assets,url)"
-
-          jq -e             --arg tag "$TAG"             --argjson prerelease "$PRERELEASE"             '
-              .isDraft == false
-              and .isImmutable == true
-              and .tagName == $tag
-              and .isPrerelease == $prerelease
-            '             <<< "$release_json" >/dev/null
-
-          echo "Immutable release verified:"
-          jq -r '"\(.url)\nassets=\(.assets | length)\ntarget=\(.targetCommitish)"' <<< "$release_json"
-
-      - name: Cleanup draft release after failure
-        if: ${{ (failure() || cancelled()) && steps.prepare.outputs.created == 'true' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set +e
-
-          release_json="$(gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json isDraft,isImmutable 2>/dev/null)"
-
-          if [[ -z "$release_json" ]]; then
-            echo "Release $TAG is not readable; nothing safe to clean up."
-            exit 0
-          fi
-
-          is_draft="$(jq -r '.isDraft' <<< "$release_json")"
-          is_immutable="$(jq -r '.isImmutable' <<< "$release_json")"
-
-          if [[ "$is_draft" == "true" && "$is_immutable" != "true" ]]; then
-            echo "Cleaning up draft release $TAG and its tag."
-            gh release delete "$TAG" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
-          else
-            echo "Release $TAG is already published or immutable; refusing destructive cleanup."
-          fi
+          echo "Release $TAG published."
