@@ -336,6 +336,9 @@ jobs:
         shell: bash
         env:
           GOFLAGS: -mod=readonly
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOFLAGS: -mod=readonly
         run: |
           set -euo pipefail
           goreleaser release --clean --skip=publish
@@ -578,7 +581,7 @@ jobs:
             '             <<< "$release_json" >/dev/null
 
           echo "Immutable release verified:"
-          jq -r '"(.url)\nassets=(.assets | length)\ntarget=(.targetCommitish)"' <<< "$release_json"
+          jq -r '"\(.url)\nassets=\(.assets | length)\ntarget=\(.targetCommitish)"' <<< "$release_json"
 
       - name: Cleanup draft release after failure
         if: ${{ (failure() || cancelled()) && steps.prepare.outputs.created == 'true' }}
