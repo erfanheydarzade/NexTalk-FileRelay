@@ -8,6 +8,10 @@
 version: 2
 project_name: nextalk-file-relay
 
+before:
+  hooks:
+    - go mod tidy
+
 builds:
   - id: nextalk-file-relay
     main: ./cmd/filerelayd
@@ -37,11 +41,6 @@ builds:
         goarch: arm
       - goos: windows
         goarch: arm64
-
-checksum:
-  name_template: goreleaser-checksums.txt
-  algorithm: sha256
-
 
 archives:
   - id: nextalk-file-relay-archive
