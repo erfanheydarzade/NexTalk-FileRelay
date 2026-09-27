@@ -199,10 +199,12 @@ jobs:
         run: |
           set -euo pipefail
           export BRIDGE_DIST="$RUNNER_TEMP/nextalk-filerelay-bridge-dist"
+          export RELEASE_ASSETS_DIR="$RUNNER_TEMP/nextalk-filerelay-release-assets"
           echo "BRIDGE_DIST=$BRIDGE_DIST" >> "$GITHUB_ENV"
+          echo "RELEASE_ASSETS_DIR=$RELEASE_ASSETS_DIR" >> "$GITHUB_ENV"
 
-          rm -rf "$BRIDGE_DIST"
-          mkdir -p "$BRIDGE_DIST"
+          rm -rf "$BRIDGE_DIST" "$RELEASE_ASSETS_DIR"
+          mkdir -p "$BRIDGE_DIST" "$RELEASE_ASSETS_DIR"
 
       - name: Build and package .ntx bridge bundles
         working-directory: transports/filerelay
@@ -329,35 +331,28 @@ jobs:
           set -euo pipefail
           goreleaser release --clean --skip=publish
 
-      - name: Verify GoReleaser artifacts
+      - name: Prepare final GoReleaser release assets
         shell: bash
         run: |
           set -euo pipefail
 
-          expected=(
+          core_assets=(
             "nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
             "nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
             "nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
             "nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
             "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
             "nextalk-file-relay_${VERSION}_windows_amd64.zip"
-            "nextalk-file-relay_${VERSION}_linux_amd64"
-            "nextalk-file-relay_${VERSION}_darwin_amd64"
-            "nextalk-file-relay_${VERSION}_linux_arm64"
-            "nextalk-file-relay_${VERSION}_darwin_arm64"
-            "checksums.txt"
           )
 
           cd dist
 
-          for asset in "${expected[@]}"; do
-            if [[ ! -f "$asset" ]]; then
-              echo "::error::Missing GoReleaser artifact: $asset"
-              exit 1
-            fi
+          for asset in "${core_assets[@]}"; do
+            test -s "$asset"
           done
 
-          sha256sum -c checksums.txt
+          test -s goreleaser-checksums.txt
+          sha256sum -c goreleaser-checksums.txt
 
           tar -tzf "nextalk-file-relay_${VERSION}_linux_amd64.tar.gz" >/dev/null
           tar -tzf "nextalk-file-relay_${VERSION}_linux_arm64.tar.gz" >/dev/null
@@ -366,6 +361,66 @@ jobs:
           tar -tzf "nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz" >/dev/null
           unzip -tq "nextalk-file-relay_${VERSION}_windows_amd64.zip"
 
+          copy_raw() {
+            local pattern="$1"
+            local destination="$2"
+            mapfile -t matches < <(find . -mindepth 2 -maxdepth 3 -type f -path "$pattern" -print)
+
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one raw binary matching: $pattern"
+              printf "  %s\n" "${matches[@]}"
+              exit 1
+            fi
+
+            cp "${matches[0]}" "$RELEASE_ASSETS_DIR/$destination"
+          }
+
+          cd ..
+
+          for asset in "${core_assets[@]}"; do
+            cp "dist/$asset" "$RELEASE_ASSETS_DIR/$asset"
+          done
+
+          copy_raw "dist/nextalk-file-relay_linux_amd64*/nextalk-file-relay" \
+            "nextalk-file-relay_${VERSION}_linux_amd64"
+
+          copy_raw "dist/nextalk-file-relay_darwin_amd64*/nextalk-file-relay" \
+            "nextalk-file-relay_${VERSION}_darwin_amd64"
+
+          copy_raw "dist/nextalk-file-relay_linux_arm64*/nextalk-file-relay" \
+            "nextalk-file-relay_${VERSION}_linux_arm64"
+
+          copy_raw "dist/nextalk-file-relay_darwin_arm64*/nextalk-file-relay" \
+            "nextalk-file-relay_${VERSION}_darwin_arm64"
+
+          release_assets=(
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_windows_amd64.zip"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64"
+          )
+
+          for asset in "${release_assets[@]}"; do
+            test -s "$asset"
+          done
+
+          sha256sum "${release_assets[@]}" > "$RELEASE_ASSETS_DIR/checksums.txt"
+          sha256sum -c "$RELEASE_ASSETS_DIR/checksums.txt"
+
+          count="$(find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f | wc -l)"
+          if [[ "$count" -ne 11 ]]; then
+            echo "::error::Expected 11 final GoReleaser release assets, found $count."
+            find "$RELEASE_ASSETS_DIR" -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+          echo "Verified 11 final GoReleaser release assets."
       - name: Verify repository is clean after GoReleaser
         shell: bash
         run: |
@@ -380,7 +435,7 @@ jobs:
       - name: Generate artifact attestations
         uses: actions/attest@v4
         with:
-          subject-checksums: dist/checksums.txt
+          subject-checksums: ${{ env.RELEASE_ASSETS_DIR }}/checksums.txt
 
       - name: Generate bridge artifact attestations
         uses: actions/attest@v4
@@ -395,17 +450,17 @@ jobs:
           set -euo pipefail
 
           assets=(
-            "dist/nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
-            "dist/nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
-            "dist/nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
-            "dist/nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
-            "dist/nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
-            "dist/nextalk-file-relay_${VERSION}_windows_amd64.zip"
-            "dist/nextalk-file-relay_${VERSION}_linux_amd64"
-            "dist/nextalk-file-relay_${VERSION}_darwin_amd64"
-            "dist/nextalk-file-relay_${VERSION}_linux_arm64"
-            "dist/nextalk-file-relay_${VERSION}_darwin_arm64"
-            "dist/checksums.txt"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_armv7.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64.tar.gz"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_windows_amd64.zip"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_amd64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_amd64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_linux_arm64"
+            "$RELEASE_ASSETS_DIR/nextalk-file-relay_${VERSION}_darwin_arm64"
+            "$RELEASE_ASSETS_DIR/checksums.txt"
           )
 
           for asset in "${assets[@]}"; do
@@ -415,7 +470,6 @@ jobs:
           gh release upload "$TAG" "${assets[@]}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber
-
       - name: Upload .ntx bridge assets to draft release
         shell: bash
         env:
