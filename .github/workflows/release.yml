@@ -152,16 +152,25 @@ jobs:
             echo "created=false" >> "$GITHUB_OUTPUT"
           else
             if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null 2>&1; then
-              echo "::error::Tag $TAG already exists without a release. Refusing to attach a new immutable release implicitly."
-              echo "::error::Create the release for that existing tag manually, or choose a new version."
-              exit 1
+              git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+              existing_tag_sha="$(git rev-list -n 1 "$TAG")"
+
+              if [[ "$existing_tag_sha" != "$GITHUB_SHA" ]]; then
+                echo "::error::Tag $TAG already exists at a different commit."
+                echo "::error::Tag commit:     $existing_tag_sha"
+                echo "::error::Workflow commit: $GITHUB_SHA"
+                echo "::error::Refusing to attach a release to the wrong source commit."
+                exit 1
+              fi
+
+              echo "Creating draft release for existing tag $TAG."
+              gh release create "$TAG" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag --generate-notes
+            else
+              echo "Creating draft release $TAG at commit ${GITHUB_SHA}."
+              gh release create "$TAG" --repo "${GITHUB_REPOSITORY}" --draft --target "${GITHUB_SHA}" --generate-notes
             fi
 
-            echo "Creating draft release $TAG at commit ${GITHUB_SHA}."
-            gh release create "$TAG"               --repo "${GITHUB_REPOSITORY}"               --draft               --target "${GITHUB_SHA}"               --generate-notes
-
-            echo "created=true" >> "$GITHUB_OUTPUT"
-          fi
+            echo "created=true" >> "$GITHUB_OUTPUT"          fi
 
       - name: Resolve release commit
         shell: bash
