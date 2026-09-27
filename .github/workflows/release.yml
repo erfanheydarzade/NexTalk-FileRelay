@@ -296,6 +296,13 @@ jobs:
 
           test -s filerelay-bridge_checksums.txt
 
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "${{ env.GORELEASER_VERSION }}"
+          install-only: true
+
       - name: Validate GoReleaser configuration
         shell: bash
         run: |
@@ -315,14 +322,12 @@ jobs:
           fi
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "${{ env.GORELEASER_VERSION }}"
-          args: release --clean --skip=publish
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOFLAGS: -mod=readonly
+        run: |
+          set -euo pipefail
+          goreleaser release --clean --skip=publish
 
       - name: Verify GoReleaser artifacts
         shell: bash
