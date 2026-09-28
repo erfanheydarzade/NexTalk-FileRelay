@@ -79,6 +79,38 @@ func (x *xferState) scopedKey(userTag string) (ed25519.PrivateKey, error) {
 	return priv, nil
 }
 
+func (b *bridge) onIdentityRegister(payload []byte) (uint8, []byte) {
+	req, err := unmarshalIdentityRegisterReq(payload)
+	if err != nil {
+		return opError, errPayload(errTransport, err.Error())
+	}
+	routerURL := req.routerURL
+	if routerURL == "" {
+		routerURL = b.effectiveRouter()
+	}
+	if routerURL == "" {
+		return opError, errPayload(errTransport, "no router_url")
+	}
+	body, err := protocol.MarshalRegister(&protocol.Register{
+		ClientPub: req.pubkey,
+		Timestamp: req.timestamp,
+		Nonce:     req.nonce,
+		Signature: req.signature,
+	})
+	if err != nil {
+		return opError, errPayload(errTransport, err.Error())
+	}
+	st, raw, err := b.postBinary(joinURL(routerURL, protocol.RouteRegister), protocol.SchemaRegister, body)
+	if err != nil || st != 200 {
+		return opError, errPayload(errTransport, xferHTTPError("identity register", st, raw, err))
+	}
+	res, err := protocol.UnmarshalRegisterResponse(raw)
+	if err != nil {
+		return opError, errPayload(errTransport, err.Error())
+	}
+	return opIdentityRegister, marshalRegisterResult(res.MailboxID, res.ReadSecret, res.ShardURL, routerURL)
+}
+
 func (b *bridge) onRegister(payload []byte) (uint8, []byte) {
 	req, err := unmarshalRegisterReq(payload)
 	if err != nil {
