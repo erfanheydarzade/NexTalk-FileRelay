@@ -167,3 +167,8 @@ transports/filerelay/
 ├── package.sh / package.ps1
 └── README.md              # this file
 ```
+
+
+## Configuration
+
+The `router_url` may be either the FileRelay server root or the `/fr/v1/` API root. Both forms are normalized by the bridge, including a trailing slash.
