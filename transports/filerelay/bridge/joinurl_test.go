@@ -18,6 +18,8 @@ func TestJoinURL(t *testing.T) {
 		{"multiple trailing slashes", "https://shard.example.com///", "/fr/v1/send", "https://shard.example.com/fr/v1/send"},
 		{"route missing leading slash", "https://shard.example.com", "fr/v1/send", "https://shard.example.com/fr/v1/send"},
 		{"base with path prefix and trailing slash", "https://gw.example.com/relay/", "/fr/v1/hello", "https://gw.example.com/relay/fr/v1/hello"},
+		{"base already at FileRelay API prefix", "http://127.0.0.1:8080/fr/v1/", "/fr/v1/register", "http://127.0.0.1:8080/fr/v1/register"},
+		{"base already at FileRelay API prefix without slash", "http://127.0.0.1:8080/fr/v1", "/fr/v1/resolve", "http://127.0.0.1:8080/fr/v1/resolve"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
