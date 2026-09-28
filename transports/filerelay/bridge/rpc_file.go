@@ -17,8 +17,9 @@ const (
 	opXferResume   = 13
 	opXferGet      = 14
 	opXferComplete = 15
-	opXferCancel   = 16
-	opError        = 0
+	opXferCancel       = 16
+	opIdentityRegister = 17
+	opError             = 0
 )
 
 func getU32(b []byte) (uint32, error) {
@@ -52,6 +53,46 @@ func putU64(v uint64) []byte {
 }
 
 func errPayload(code uint32, detail string) []byte { return marshalError(code, detail) }
+
+type identityRegisterReq struct {
+	pubkey    []byte
+	timestamp uint64
+	nonce     []byte
+	signature []byte
+	routerURL string
+}
+
+// unmarshalIdentityRegisterReq decodes the core-signed FileRelay identity registration request.
+// The transport receives only the public key and proof; the private key remains in NexTalk core.
+func unmarshalIdentityRegisterReq(body []byte) (*identityRegisterReq, error) {
+	fields, err := nanopack.DecodeID(body)
+	if err != nil {
+		return nil, err
+	}
+	out := &identityRegisterReq{}
+	for _, f := range fields {
+		switch f.ID {
+		case 1:
+			out.pubkey = append([]byte(nil), f.Data...)
+		case 2:
+			v, err := getU64(f.Data)
+			if err != nil {
+				return nil, err
+			}
+			out.timestamp = v
+		case 3:
+			out.nonce = append([]byte(nil), f.Data...)
+		case 4:
+			out.signature = append([]byte(nil), f.Data...)
+		case 5:
+			out.routerURL = string(append([]byte(nil), f.Data...))
+		}
+	}
+	if len(out.pubkey) != 32 || len(out.nonce) != 16 || len(out.signature) != 64 || len(out.routerURL) > 512 {
+		return nil, fmt.Errorf("rpc: bad identity register")
+	}
+	return out, nil
+}
 
 type registerReq struct {
 	userTag   string
