@@ -129,6 +129,37 @@ func marshalRegisterResult(mailboxID, readSecret []byte, shardURL, routerURL str
 	return b
 }
 
+type registerResult struct {
+	MailboxID  []byte
+	ReadSecret []byte
+	ShardURL   string
+	RouterURL  string
+}
+
+func unmarshalRegisterResult(body []byte) (*registerResult, error) {
+	fields, err := nanopack.DecodeID(body)
+	if err != nil {
+		return nil, err
+	}
+	out := &registerResult{}
+	for _, f := range fields {
+		switch f.ID {
+		case 1:
+			out.MailboxID = append([]byte(nil), f.Data...)
+		case 2:
+			out.ReadSecret = append([]byte(nil), f.Data...)
+		case 3:
+			out.ShardURL = string(append([]byte(nil), f.Data...))
+		case 4:
+			out.RouterURL = string(append([]byte(nil), f.Data...))
+		}
+	}
+	if len(out.MailboxID) != 16 || len(out.ReadSecret) != 32 || out.ShardURL == "" || out.RouterURL == "" {
+		return nil, fmt.Errorf("rpc: bad register result")
+	}
+	return out, nil
+}
+
 type resolveReq struct {
 	recipientPub []byte
 	routerURL    string
