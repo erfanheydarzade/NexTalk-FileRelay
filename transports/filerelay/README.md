@@ -68,9 +68,45 @@ failure. Never commit the built `.ntx`.
 
 ## Install & use (in NexTalk, no rebuild)
 
+Install the transport:
+
 ```bash
 nextalk transport install filerelay.ntx --enable
+```
+
+Configure the FileRelay router:
+
+### Bash / POSIX shells
+
+```bash
 nextalk transport config filerelay '{"router_url":"http://127.0.0.1:8080"}'
+```
+
+### Windows PowerShell
+
+When invoking the Windows `nextalk.exe` from PowerShell, escape the embedded
+JSON quotes with backslashes:
+
+```powershell
+.\nextalk transport config filerelay '{\"router_url\":\"http://127.0.0.1:8080\"}'
+```
+
+The same PowerShell form applies to any JSON object:
+
+```powershell
+.\nextalk transport config filerelay '{\"x\":\"y\"}'
+```
+
+The backslashes are command-line escaping only. The transport receives the
+normal JSON object, for example:
+
+```json
+{"router_url":"http://127.0.0.1:8080"}
+```
+
+Then register the user:
+
+```bash
 nextalk transport register filerelay --user alice --router http://127.0.0.1:8080
 # -> {"mailbox_id":"...","read_secret":"...","shard_url":"..."}  (share mailbox+shard with senders)
 nextalk transport poll filerelay -i <YOU>                                   # like worker listen
