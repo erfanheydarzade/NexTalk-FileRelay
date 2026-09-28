@@ -190,6 +190,8 @@ func (b *bridge) dispatch(op uint8, payload []byte) (uint8, []byte) {
 		return opStatus, marshalStatus(false, "stopped")
 	case opRegister:
 		return b.onRegister(payload)
+	case opIdentityRegister:
+		return b.onIdentityRegister(payload)
 	case opResolve:
 		return b.onResolve(payload)
 	case opXferCreate:
