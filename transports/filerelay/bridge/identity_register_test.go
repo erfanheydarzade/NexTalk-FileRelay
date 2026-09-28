@@ -69,8 +69,8 @@ func TestIdentityRegisterUsesFileRelayProtocol(t *testing.T) {
 
 	b := &bridge{
 		mailboxes: map[string]*mailbox{},
-		http: srv.Client(),
-		xfer: newXferState(),
+		http:      srv.Client(),
+		xfer:      newXferState(),
 		routerURL: srv.URL,
 	}
 

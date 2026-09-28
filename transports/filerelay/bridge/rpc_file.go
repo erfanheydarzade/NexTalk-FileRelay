@@ -10,16 +10,16 @@ import (
 )
 
 const (
-	opRegister     = 9
-	opResolve      = 10
-	opXferCreate   = 11
-	opXferPut      = 12
-	opXferResume   = 13
-	opXferGet      = 14
-	opXferComplete = 15
+	opRegister         = 9
+	opResolve          = 10
+	opXferCreate       = 11
+	opXferPut          = 12
+	opXferResume       = 13
+	opXferGet          = 14
+	opXferComplete     = 15
 	opXferCancel       = 16
 	opIdentityRegister = 17
-	opError             = 0
+	opError            = 0
 )
 
 func getU32(b []byte) (uint32, error) {
