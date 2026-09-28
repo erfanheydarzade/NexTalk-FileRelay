@@ -397,6 +397,13 @@ func joinURL(base, route string) string {
 	if !strings.HasPrefix(route, "/") {
 		route = "/" + route
 	}
+	// Accept both a host/root router URL and a URL already rooted at /fr/v1.
+	// The latter is useful for local reverse proxies and is part of the
+	// supported transport configuration surface.
+	const apiPrefix = "/fr/v1"
+	if strings.HasSuffix(base, apiPrefix) && (route == apiPrefix || strings.HasPrefix(route, apiPrefix+"/")) {
+		return base + strings.TrimPrefix(route, apiPrefix)
+	}
 	return base + route
 }
 
