@@ -114,6 +114,13 @@ CLI installs as a transport plugin (`nextalk transport install filerelay.ntx`)
 build, packaging, and installation steps, and its trust model (throwaway
 courier identity, never sees NexTalk's private keys).
 
+The extension also has a browser (WebAssembly) package, `filerelay-wasm.ntx`, built
+by `transports/build-wasm.mjs` with Node alone and attached to every release. Under
+WASM transport ABI v1 it is an in-tab loopback queue (messages only — the ABI has no
+network or file-transfer ops); the native bridge is what talks to a relay. Only the
+extension targets the browser: the router/shard server never runs there. Details in
+the transport README.
+
 ## Security Notes
 
 - The relay never stores or transmits plaintext; it only ever sees what the

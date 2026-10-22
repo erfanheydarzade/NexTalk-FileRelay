@@ -152,6 +152,35 @@ nextalk transport xfer-recv filerelay -i <YOU> --from <PEER> --ticket <base64> -
 Full runs: `NexTalk/docs/real-scenario.md` scenarios B and C. Command
 reference: `NexTalk/docs/transport-cli.md`.
 
+## Browser (WebAssembly) package
+
+NexTalk's browser build cannot spawn processes or touch a filesystem, so it only runs
+`.wasm` packages. This extension therefore also ships as **`filerelay-wasm.ntx`**, built with
+Node alone (no Go, TinyGo or wat2wasm) and reproducible byte-for-byte:
+
+```bash
+cd transports
+node build-wasm.mjs                  # -> dist/filerelay-wasm.ntx + dist/SHA256SUMS
+node build-wasm.mjs --version 1.4.0  # stamp manifest.version (the release workflow does this)
+node --test test/wasm-package.test.mjs
+```
+
+Every package is validated with NexTalk's manifest rules and checked against WASM
+transport **ABI v1** (exports, sandboxed imports, behaviour) before it is written. CI:
+`.github/workflows/wasm-extension.yml` builds, tests and uploads it on every change;
+`release.yml` attaches it to each release.
+
+**What it does — and does not.** ABI v1 gives a module linear memory plus an optional
+`ntx.log` import: no sockets, no `fetch`, no filesystem, and no file-transfer ops. So `filerelay-wasm` is an
+in-memory loopback queue (`message` only, no permissions): frames sent in a tab come back out
+of the same tab. It is useful for trying the transport flow and for two identities in one tab,
+but it never contacts a Router or shard. Use the native `filerelay.ntx` package for the real
+relay. The ids differ (`filerelay` vs `filerelay-wasm`), so both can be installed side by side. A
+networked browser build needs a host-mediated network import in the ABI first.
+
+Only the *extension* is built for the browser; the relay servers themselves are never
+compiled to or run in WebAssembly.
+
 ## Files
 
 ```
@@ -164,6 +193,7 @@ transports/filerelay/
 │   ├── rpc_file.go        # file/mailbox codecs (schemas 115–126)
 │   ├── xfer.go            # register/resolve + xfer ops (scoped keys, bindings)
 │   ├── *_test.go          # codec + bridge↔server interop tests
+├── wasm/                  # browser package: manifest.json, build.mjs, verify.json
 ├── package.sh / package.ps1
 └── README.md              # this file
 ```

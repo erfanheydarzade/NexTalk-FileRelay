@@ -58,13 +58,19 @@ Each release produces:
 - `filerelay-bridge_v0.1.0_<os>_<arch>.ntx` — the NexTalk transport bridge
   (`transports/filerelay/`), packaged per OS/arch with its manifest's
   `version` field stamped to the release tag, for every supported OS/arch
-- `filerelay-bridge_checksums.txt` with SHA256 hashes of the `.ntx` bundles
+- `filerelay-wasm_v0.1.0_browser.ntx` — the browser (WebAssembly) package of the
+  extension (`transports/filerelay/wasm/`), built with Node only and stamped with
+  the same version. Under WASM transport ABI v1 it is an in-tab loopback queue
+  (messages only), a complement to the native bundles rather than a replacement.
+- `filerelay-bridge_checksums.txt` with SHA256 hashes of all seven `.ntx` bundles
+  (six native + the browser one)
 
-The `.ntx` bundles are built and uploaded by the `package-bridge` job in
-`.github/workflows/release.yml` after GoReleaser publishes the server
-archives — it cross-compiles `filerelay-bridge`, refuses to package if
-`go vet`/`go test` on the bridge fail, and uploads the results to the same
-GitHub Release via `gh release upload --clobber`.
+The `.ntx` bundles are built in the single `release` job of
+`.github/workflows/release.yml`, *before* the release tag is created: it
+cross-compiles `filerelay-bridge`, refuses to package if `go vet`/`go test`
+on the bridge fail, tests and builds the browser package
+(`transports/build-wasm.mjs`), and later uploads everything to the draft
+GitHub Release together with the GoReleaser archives.
 
 ## Versioning
 
