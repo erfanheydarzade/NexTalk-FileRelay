@@ -166,6 +166,43 @@ jobs:
           echo "==> Generated bridge bundles:"
           ls -lah "$DIST"
 
+      - name: Set up Node (browser extension build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build browser (.wasm) extension
+        working-directory: transports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${TAG#v}"
+          ROOT="$(git rev-parse --show-toplevel)"
+          WASM_TMP="$RUNNER_TEMP/wasm-dist"
+
+          node --test test/wasm-package.test.mjs
+          node build-wasm.mjs --version "$VERSION" --out "$WASM_TMP"
+
+          OUT="$ROOT/bridge-dist/filerelay-wasm_${VERSION}_browser.ntx"
+          cp "$WASM_TMP/filerelay-wasm.ntx" "$OUT"
+
+          test -s "$OUT"
+          unzip -tq "$OUT"
+          test "$(unzip -Z1 "$OUT" | wc -l)" -eq 2
+
+          unzip -p "$OUT" manifest.json \
+            | jq -e --arg version "$VERSION" '
+                .id == "filerelay-wasm"
+                and .version == $version
+                and .api_version == "1"
+                and .entry == "filerelay.wasm"
+                and (.permissions | length) == 0
+              ' >/dev/null
+          unzip -Z1 "$OUT" | grep -qx 'filerelay.wasm'
+
+          echo "Packaged: $OUT"
+
       - name: Generate bridge checksums
         working-directory: bridge-dist
         shell: bash
@@ -174,6 +211,7 @@ jobs:
 
           sha256sum \
             filerelay-bridge_*.ntx \
+            filerelay-wasm_*.ntx \
             > filerelay-bridge_checksums.txt
 
           test -s filerelay-bridge_checksums.txt
@@ -332,7 +370,8 @@ jobs:
             --repo "${GITHUB_REPOSITORY}"
 
       # ------------------------------------------------------------
-      # Upload all six .ntx bridge bundles + checksums.
+      # Upload the six native .ntx bridge bundles, the browser (.wasm)
+      # bundle, and the checksums covering all seven.
       # ------------------------------------------------------------
 
       - name: Upload bridge bundles
@@ -349,8 +388,8 @@ jobs:
               | sort
           )
 
-          if [[ "${#BRIDGE_ASSETS[@]}" -ne 7 ]]; then
-            echo "::error::Expected 7 bridge assets (6 .ntx + 1 checksum), found ${#BRIDGE_ASSETS[@]}."
+          if [[ "${#BRIDGE_ASSETS[@]}" -ne 8 ]]; then
+            echo "::error::Expected 8 bridge assets (6 native .ntx + 1 browser .ntx + 1 checksum), found ${#BRIDGE_ASSETS[@]}."
             printf '  %s\n' "${BRIDGE_ASSETS[@]}"
             exit 1
           fi
@@ -382,6 +421,7 @@ jobs:
 
           EXPECTED=(
             "filerelay-bridge_*.ntx"
+            "filerelay-wasm_*_browser.ntx"
             "filerelay-bridge_checksums.txt"
           )
 
