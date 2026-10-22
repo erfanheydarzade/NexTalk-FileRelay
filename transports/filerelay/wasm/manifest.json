@@ -1,0 +1,12 @@
+{
+  "id": "filerelay-wasm",
+  "name": "FileRelay (in-tab loopback)",
+  "version": "1.0.0",
+  "api_version": "1",
+  "entry": "filerelay.wasm",
+  "capabilities": [
+    "message"
+  ],
+  "permissions": [],
+  "description": "Browser build of the FileRelay courier transport: an in-memory loopback queue running as WebAssembly inside the tab. Messages only; it does not contact a FileRelay router or shard and has no file transfer (WASM ABI v1 has neither network nor transfer ops); use the native filerelay package for the real relay. No keys, opaque frames only."
+}
