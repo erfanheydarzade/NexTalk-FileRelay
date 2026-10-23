@@ -1,18 +1,30 @@
 name: CI
 
+# Runs on every push/PR to main. Mirrors the validation done by release.yml
+# (Go build/vet/test/race/vuln scan and the browser .wasm extension) so a
+# release never fails on something CI could have caught earlier. Release
+# assets are published only by release.yml (exactly one writer to a release).
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# Cancel superseded runs on the same branch/PR to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     name: Build, Vet & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -24,8 +36,10 @@ jobs:
           go-version: "1.25.14"
           cache: true
 
-      - name: Download modules
-        run: go mod download
+      - name: Download and verify modules
+        run: |
+          go mod download
+          go mod verify
 
       - name: Verify go.mod / go.sum are tidy
         run: |
@@ -56,6 +70,12 @@ jobs:
       - name: Test (race detector)
         run: go test -race ./... -count=1
 
+      - name: Vet and test .ntx courier bridge
+        working-directory: transports/filerelay
+        run: |
+          go vet ./bridge/...
+          go test ./bridge/... -count=1
+
       # Keep govulncheck compatible with the project's Go version.
       # Do not install @latest because newer x/vuln releases may require
       # a newer Go toolchain than the project supports.
@@ -66,3 +86,64 @@ jobs:
       - name: Vulnerability scan
         run: |
           govulncheck ./...
+
+  wasm:
+    name: Browser extension (.wasm / .ntx)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Pure Node: no Go, TinyGo or network needed, and output is byte-reproducible.
+    # Only the *extension* runs in the browser; relay servers (routers / shards /
+    # daemons) are never built for WebAssembly.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Syntax check
+        working-directory: transports
+        run: |
+          set -euo pipefail
+          for f in build-wasm.mjs tools/*.mjs test/*.mjs */wasm/build.mjs; do
+            node --check "$f"
+          done
+
+      - name: Tests (ABI v1 conformance, sandbox, policy, reproducibility)
+        working-directory: transports
+        run: node --test test/wasm-package.test.mjs
+
+      - name: Build
+        working-directory: transports
+        run: node build-wasm.mjs
+
+      - name: Reproducibility - a second build must be byte-identical
+        working-directory: transports
+        run: |
+          set -euo pipefail
+          cp dist/SHA256SUMS /tmp/first.sums
+          node build-wasm.mjs
+          diff /tmp/first.sums dist/SHA256SUMS
+          echo "reproducible:"; cat dist/SHA256SUMS
+
+      - name: Package contents are exactly manifest.json + the .wasm entry
+        working-directory: transports
+        run: |
+          set -euo pipefail
+          for p in dist/*.ntx; do
+            echo "== $p"; unzip -tq "$p"
+            test "$(unzip -Z1 "$p" | wc -l)" -eq 2
+            unzip -Z1 "$p" | grep -qx manifest.json
+            unzip -Z1 "$p" | grep -q '\.wasm$'
+          done
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filerelay-wasm
+          path: |
+            transports/dist/*.ntx
+            transports/dist/SHA256SUMS
+          if-no-files-found: error
