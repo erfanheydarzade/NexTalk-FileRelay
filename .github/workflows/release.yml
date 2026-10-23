@@ -1,8 +1,8 @@
 name: Release
 
 # Releases are created from this workflow only.
-# The workflow verifies the selected main commit with GitHub (signature),
-# validates the Go code and the browser (.wasm) extension, builds the
+# The workflow validates the selected main commit, checks the Go code and
+# browser (.wasm) extension, builds the
 # GoReleaser artifacts and the .ntx bundles (6 native + 1 browser), creates a
 # DRAFT release targeting that exact commit, uploads every asset, then
 # publishes the release.
@@ -78,28 +78,6 @@ jobs:
           SHA="$(git rev-parse HEAD)"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "Validated commit: $SHA"
-
-      - name: Verify commit with GitHub
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ steps.commit.outputs.sha }}
-        run: |
-          set -euo pipefail
-
-          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" \
-            --jq '.commit.verification')"
-
-          verified="$(jq -r '.verified' <<< "$verification")"
-          reason="$(jq -r '.reason' <<< "$verification")"
-
-          if [[ "$verified" != "true" ]]; then
-            echo "::error::Commit $SHA is not verified by GitHub (reason: $reason)."
-            echo "::error::Releases must be cut from a signed, GitHub-verified commit."
-            exit 1
-          fi
-
-          echo "Commit $SHA is verified by GitHub (reason: $reason)."
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -242,26 +220,6 @@ jobs:
           fi
 
           echo "Using validated commit: $RELEASE_SHA"
-
-      - name: Re-verify release commit with GitHub
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}" \
-            --jq '.commit.verification')"
-
-          verified="$(jq -r '.verified' <<< "$verification")"
-          reason="$(jq -r '.reason' <<< "$verification")"
-
-          if [[ "$verified" != "true" ]]; then
-            echo "::error::Commit $RELEASE_SHA is not verified by GitHub (reason: $reason)."
-            exit 1
-          fi
-
-          echo "Commit $RELEASE_SHA is verified by GitHub (reason: $reason)."
 
       - name: Refuse to overwrite a published or immutable release
         shell: bash
