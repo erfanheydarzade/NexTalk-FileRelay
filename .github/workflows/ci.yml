@@ -15,7 +15,6 @@ on:
 permissions:
   contents: read
 
-# Cancel superseded runs on the same branch/PR to save CI minutes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -33,7 +32,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.14"
+          go-version: "1.26.10"
           cache: true
 
       - name: Download and verify modules
@@ -65,8 +64,6 @@ jobs:
       - name: Test
         run: go test ./... -v
 
-      # The relay is concurrent, so run the complete suite under
-      # the race detector as an additional correctness gate.
       - name: Test (race detector)
         run: go test -race ./... -count=1
 
@@ -76,24 +73,17 @@ jobs:
           go vet ./bridge/...
           go test ./bridge/... -count=1
 
-      # Keep govulncheck compatible with the project's Go version.
-      # Do not install @latest because newer x/vuln releases may require
-      # a newer Go toolchain than the project supports.
       - name: Install govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Vulnerability scan
-        run: |
-          govulncheck ./...
+        run: govulncheck ./...
 
   wasm:
     name: Browser extension (.wasm / .ntx)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Pure Node: no Go, TinyGo or network needed, and output is byte-reproducible.
-    # Only the *extension* runs in the browser; relay servers (routers / shards /
-    # daemons) are never built for WebAssembly.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
