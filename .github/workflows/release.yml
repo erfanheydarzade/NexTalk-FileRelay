@@ -1,0 +1,762 @@
+name: Release
+
+# Releases are created from this workflow only.
+# The workflow verifies the selected main commit with GitHub (signature),
+# validates the Go code and the browser (.wasm) extension, builds the
+# GoReleaser artifacts and the .ntx bundles (6 native + 1 browser), creates a
+# DRAFT release targeting that exact commit, uploads every asset, then
+# publishes the release.
+#
+# This workflow supersedes wasm-extension.yml: every check from it (syntax,
+# ABI v1 conformance tests, build, reproducibility, package contents) now runs
+# here as well as in ci.yml.
+#
+# The tag is NOT pushed manually. GoReleaser runs against the tag name via
+# GORELEASER_CURRENT_TAG, and the tag is created by GitHub when the draft
+# release is published. With release immutability enabled, a published tag is
+# permanently bound to its release, so a failed run never leaves a stray tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. v1.4.0 or v1.4.0-rc.1"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark this release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.sha }}
+
+    steps:
+      - name: Validate version and release branch
+        shell: bash
+        env:
+          TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "::error::Releases must be cut from main. Selected ref: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version: $TAG"
+            echo "::error::Expected format: v1.4.0 or v1.4.0-rc.1"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Capture validated commit
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHA="$(git rev-parse HEAD)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Validated commit: $SHA"
+
+      - name: Verify commit with GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" \
+            --jq '.commit.verification')"
+
+          verified="$(jq -r '.verified' <<< "$verification")"
+          reason="$(jq -r '.reason' <<< "$verification")"
+
+          if [[ "$verified" != "true" ]]; then
+            echo "::error::Commit $SHA is not verified by GitHub (reason: $reason)."
+            echo "::error::Releases must be cut from a signed, GitHub-verified commit."
+            exit 1
+          fi
+
+          echo "Commit $SHA is verified by GitHub (reason: $reason)."
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Go modules, formatting and build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          go mod download
+          go mod verify
+
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+          fmt_out="$(gofmt -l .)"
+          if [[ -n "$fmt_out" ]]; then
+            echo "::error::These files are not gofmt-formatted:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+          go vet ./...
+          go build ./...
+
+      - name: Tests (including race detector)
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./... -count=1
+          go test -race ./... -count=1
+
+      - name: Vulnerability scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          govulncheck ./...
+
+      - name: Vet and test bridge
+        working-directory: transports/filerelay
+        shell: bash
+        run: |
+          set -euo pipefail
+          go vet ./bridge/...
+          go test ./bridge/... -count=1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: WASM extension - syntax check
+        working-directory: transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in build-wasm.mjs tools/*.mjs test/*.mjs */wasm/build.mjs; do
+            node --check "$f"
+          done
+
+      - name: WASM extension - tests (ABI v1 conformance, sandbox, policy, reproducibility)
+        working-directory: transports
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test test/wasm-package.test.mjs
+
+      - name: WASM extension - build twice and require byte-identical output
+        working-directory: transports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node build-wasm.mjs --out "$RUNNER_TEMP/wasm-check-1"
+          node build-wasm.mjs --out "$RUNNER_TEMP/wasm-check-2"
+
+          diff -r "$RUNNER_TEMP/wasm-check-1" "$RUNNER_TEMP/wasm-check-2"
+          echo "WASM build is reproducible."
+
+          for p in "$RUNNER_TEMP"/wasm-check-1/*.ntx; do
+            echo "== $p"
+            unzip -tq "$p"
+            test "$(unzip -Z1 "$p" | wc -l)" -eq 2
+            unzip -Z1 "$p" | grep -qx manifest.json
+            unzip -Z1 "$p" | grep -q '\.wasm$'
+          done
+
+      - name: Verify validation left no worktree changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Validation modified the Git worktree."
+            git status --short
+            exit 1
+          fi
+
+  release:
+    name: Build and publish
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    env:
+      TAG: ${{ inputs.version }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      RELEASE_SHA: ${{ needs.validate.outputs.commit_sha }}
+
+    steps:
+      - name: Checkout validated release source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit_sha }}
+
+      - name: Verify validated release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+
+          if [[ "$ACTUAL_SHA" != "$RELEASE_SHA" ]]; then
+            echo "::error::Checked out commit does not match the validated commit."
+            echo "::error::Expected: $RELEASE_SHA"
+            echo "::error::Actual:   $ACTUAL_SHA"
+            exit 1
+          fi
+
+          echo "Using validated commit: $RELEASE_SHA"
+
+      - name: Re-verify release commit with GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          verification="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}" \
+            --jq '.commit.verification')"
+
+          verified="$(jq -r '.verified' <<< "$verification")"
+          reason="$(jq -r '.reason' <<< "$verification")"
+
+          if [[ "$verified" != "true" ]]; then
+            echo "::error::Commit $RELEASE_SHA is not verified by GitHub (reason: $reason)."
+            exit 1
+          fi
+
+          echo "Commit $RELEASE_SHA is verified by GitHub (reason: $reason)."
+
+      - name: Refuse to overwrite a published or immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if release_json="$(gh release view "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json isDraft,isImmutable 2>/dev/null)"; then
+
+            is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+            is_immutable="$(jq -r '.isImmutable' <<< "$release_json")"
+
+            if [[ "$is_draft" != "true" || "$is_immutable" == "true" ]]; then
+              echo "::error::Release $TAG already exists as a published or immutable release."
+              echo "::error::Immutable release versions are one-shot. Use a new version."
+              exit 1
+            fi
+          fi
+
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+
+            if [[ "$TAG_SHA" != "$RELEASE_SHA" ]]; then
+              echo "::error::Tag $TAG already exists at a different commit."
+              echo "::error::Tag commit:     $TAG_SHA"
+              echo "::error::Release commit: $RELEASE_SHA"
+              exit 1
+            fi
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Prepare bundle directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export BRIDGE_DIST="$RUNNER_TEMP/filerelay-bridge-dist"
+          echo "BRIDGE_DIST=$BRIDGE_DIST" >> "$GITHUB_ENV"
+
+          rm -rf "$BRIDGE_DIST"
+          mkdir -p "$BRIDGE_DIST"
+
+      - name: Cross-compile and package six native .ntx bundles
+        working-directory: transports/filerelay
+        shell: bash
+        env:
+          GOFLAGS: -mod=readonly
+        run: |
+          set -euo pipefail
+
+          VERSION="${TAG#v}"
+
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "linux arm 7"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r GOOS GOARCH GOARM <<< "$target"
+
+            ENTRY="filerelay-bridge"
+            MANIFEST="manifest.json"
+
+            if [[ "$GOOS" == "windows" ]]; then
+              ENTRY="filerelay-bridge.exe"
+              MANIFEST="manifest.windows.json"
+            fi
+
+            echo
+            echo "==> Building ${GOOS}/${GOARCH}${GOARM:+v${GOARM}}"
+
+            rm -f "$ENTRY"
+            rm -rf .ntx-stage
+            mkdir -p .ntx-stage
+
+            if [[ -n "${GOARM:-}" ]]; then
+              GOOS="$GOOS" GOARCH="$GOARCH" GOARM="$GOARM" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "$ENTRY" ./bridge
+            else
+              GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 \
+                go build -trimpath -ldflags "-s -w" -o "$ENTRY" ./bridge
+            fi
+
+            test -s "$ENTRY"
+
+            jq --arg version "$VERSION" \
+              '.version = $version' \
+              "$MANIFEST" \
+              > .ntx-stage/manifest.json
+
+            jq -e \
+              --arg version "$VERSION" \
+              --arg entry "$ENTRY" \
+              '.version == $version and .entry == $entry' \
+              .ntx-stage/manifest.json >/dev/null
+
+            cp "$ENTRY" .ntx-stage/
+
+            SUFFIX="${GOOS}_${GOARCH}${GOARM:+v${GOARM}}"
+            NTX="$BRIDGE_DIST/filerelay-bridge_${VERSION}_${SUFFIX}.ntx"
+
+            (
+              cd .ntx-stage
+              zip -q -j "$NTX" manifest.json "$ENTRY"
+            )
+
+            test -s "$NTX"
+            unzip -tq "$NTX"
+            test "$(unzip -Z1 "$NTX" | wc -l)" -eq 2
+            unzip -Z1 "$NTX" | grep -qx 'manifest.json'
+            unzip -Z1 "$NTX" | grep -Fqx "$ENTRY"
+
+            rm -rf .ntx-stage "$ENTRY"
+
+            echo "Packaged: $NTX"
+          done
+
+          count="$(find "$BRIDGE_DIST" -maxdepth 1 -type f -name 'filerelay-bridge_*.ntx' | wc -l)"
+          if [[ "$count" -ne 6 ]]; then
+            echo "::error::Expected 6 native .ntx bundles, found $count."
+            find "$BRIDGE_DIST" -maxdepth 1 -type f -print
+            exit 1
+          fi
+
+          echo
+          echo "==> Six native .ntx bundles verified:"
+          ls -lh "$BRIDGE_DIST"
+
+      - name: Build and verify browser (.wasm) extension
+        working-directory: transports
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${TAG#v}"
+          WASM_TMP="$RUNNER_TEMP/wasm-dist"
+          WASM_TMP2="$RUNNER_TEMP/wasm-dist-repro"
+
+          node build-wasm.mjs --version "$VERSION" --out "$WASM_TMP"
+
+          # Reproducibility: a second build must be byte-identical.
+          node build-wasm.mjs --version "$VERSION" --out "$WASM_TMP2"
+          diff -r "$WASM_TMP" "$WASM_TMP2"
+          echo "WASM build is reproducible."
+
+          OUT="$BRIDGE_DIST/filerelay-wasm_${VERSION}_browser.ntx"
+          cp "$WASM_TMP/filerelay-wasm.ntx" "$OUT"
+
+          # Package contents are exactly manifest.json + the .wasm entry.
+          test -s "$OUT"
+          unzip -tq "$OUT"
+          test "$(unzip -Z1 "$OUT" | wc -l)" -eq 2
+          unzip -Z1 "$OUT" | grep -qx 'manifest.json'
+          unzip -Z1 "$OUT" | grep -qx 'filerelay.wasm'
+
+          unzip -p "$OUT" manifest.json \
+            | jq -e --arg version "$VERSION" '
+                .id == "filerelay-wasm"
+                and .version == $version
+                and .api_version == "1"
+                and .entry == "filerelay.wasm"
+                and (.permissions | length) == 0
+              ' >/dev/null
+
+          echo "Packaged: $OUT"
+
+      - name: Generate and verify bundle checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$BRIDGE_DIST"
+
+          sha256sum filerelay-bridge_*.ntx filerelay-wasm_*.ntx \
+            > filerelay-bridge_checksums.txt
+          sha256sum -c filerelay-bridge_checksums.txt
+
+          test -s filerelay-bridge_checksums.txt
+          # six native bundles + the browser (.wasm) bundle
+          test "$(wc -l < filerelay-bridge_checksums.txt)" -eq 7
+
+          echo "==> Bundle checksums:"
+          cat filerelay-bridge_checksums.txt
+
+      - name: Final source sanity check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Release build modified the source worktree."
+            git status --short
+            exit 1
+          fi
+
+      # GoReleaser is pointed at the tag name without creating the tag.
+      # validate is skipped because there is no local tag yet; the commit and
+      # worktree were already verified above.
+      - name: Run GoReleaser without publishing
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean --skip=publish,validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.version }}
+
+      - name: Verify GoReleaser output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "==> GoReleaser dist contents:"
+          find dist -maxdepth 2 -type f -print | sort
+
+          if ! find dist -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.zip' \) \
+            | grep -q .; then
+            echo "::error::GoReleaser did not produce any archives."
+            exit 1
+          fi
+
+      - name: Generate bundle attestation
+        uses: actions/attest@v4
+        with:
+          subject-checksums: ${{ env.BRIDGE_DIST }}/filerelay-bridge_checksums.txt
+
+      - name: Upload bundles as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filerelay-ntx
+          path: |
+            ${{ env.BRIDGE_DIST }}/*.ntx
+            ${{ env.BRIDGE_DIST }}/filerelay-bridge_checksums.txt
+          if-no-files-found: error
+
+      - name: Prepare draft GitHub release
+        id: prepare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            # The earlier step already proved this is a mutable draft.
+            echo "Reusing existing draft release $TAG."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NOTES_ARGS=()
+          if [[ -f dist/CHANGELOG.md ]]; then
+            NOTES_ARGS+=(--notes-file dist/CHANGELOG.md)
+          else
+            NOTES_ARGS+=(--generate-notes)
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Creating draft release for existing tag $TAG."
+            gh release create "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft \
+              --verify-tag \
+              "${NOTES_ARGS[@]}"
+          else
+            echo "Creating draft release $TAG at $RELEASE_SHA."
+            gh release create "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft \
+              --target "$RELEASE_SHA" \
+              "${NOTES_ARGS[@]}"
+          fi
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify draft release target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh release view "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json isDraft,isImmutable,tagName,targetCommitish)"
+
+          jq -e \
+            --arg tag "$TAG" \
+            --arg sha "$RELEASE_SHA" \
+            '
+              .isDraft == true
+              and .isImmutable == false
+              and .tagName == $tag
+              and .targetCommitish == $sha
+            ' <<< "$release_json" >/dev/null
+
+          echo "Verified draft release $TAG targets $RELEASE_SHA."
+
+      - name: Upload GoReleaser artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t RELEASE_ASSETS < <(
+            find dist -maxdepth 1 -type f \
+              ! -name 'artifacts.json' \
+              ! -name 'metadata.json' \
+              ! -name 'config.yaml' \
+              ! -name 'CHANGELOG.md' \
+              -print \
+              | sort
+          )
+
+          if [[ "${#RELEASE_ASSETS[@]}" -eq 0 ]]; then
+            echo "::error::No GoReleaser release assets found."
+            exit 1
+          fi
+
+          echo "Uploading GoReleaser assets:"
+          printf '  %s\n' "${RELEASE_ASSETS[@]}"
+
+          gh release upload "$TAG" "${RELEASE_ASSETS[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+      - name: Upload bundle assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          V="${TAG#v}"
+
+          assets=(
+            "$BRIDGE_DIST/filerelay-bridge_${V}_linux_amd64.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_${V}_linux_arm64.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_${V}_linux_armv7.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_${V}_darwin_amd64.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_${V}_darwin_arm64.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_${V}_windows_amd64.ntx"
+            "$BRIDGE_DIST/filerelay-wasm_${V}_browser.ntx"
+            "$BRIDGE_DIST/filerelay-bridge_checksums.txt"
+          )
+
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+          done
+
+          echo "Uploading bundle assets:"
+          printf '  %s\n' "${assets[@]}"
+
+          gh release upload "$TAG" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+      - name: Verify draft release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          V="${TAG#v}"
+
+          gh release view "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets \
+            --jq '.assets[].name' \
+            | sort > "$RUNNER_TEMP/actual-assets.txt"
+
+          echo "==> Release assets:"
+          cat "$RUNNER_TEMP/actual-assets.txt"
+
+          expected=(
+            "filerelay-bridge_${V}_darwin_amd64.ntx"
+            "filerelay-bridge_${V}_darwin_arm64.ntx"
+            "filerelay-bridge_${V}_linux_amd64.ntx"
+            "filerelay-bridge_${V}_linux_arm64.ntx"
+            "filerelay-bridge_${V}_linux_armv7.ntx"
+            "filerelay-bridge_${V}_windows_amd64.ntx"
+            "filerelay-wasm_${V}_browser.ntx"
+            "filerelay-bridge_checksums.txt"
+          )
+
+          for name in "${expected[@]}"; do
+            if ! grep -Fxq "$name" "$RUNNER_TEMP/actual-assets.txt"; then
+              echo "::error::Missing release asset: $name"
+              exit 1
+            fi
+          done
+
+          echo "Draft release assets verified."
+
+      - name: Publish immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release edit "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false \
+              --prerelease
+          else
+            gh release edit "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false \
+              --prerelease=false
+          fi
+
+          echo "Published $TAG"
+
+      - name: Verify immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh release view "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json isDraft,isImmutable,isPrerelease,tagName,targetCommitish,assets,url)"
+
+          jq -e \
+            --arg tag "$TAG" \
+            --arg sha "$RELEASE_SHA" \
+            --argjson prerelease "$PRERELEASE" \
+            '
+              .isDraft == false
+              and .isImmutable == true
+              and .tagName == $tag
+              and .targetCommitish == $sha
+              and .isPrerelease == $prerelease
+            ' <<< "$release_json" >/dev/null
+
+          echo "Immutable release verified:"
+          jq -r '"\(.url)\nassets=\(.assets | length)\ntarget=\(.targetCommitish)"' <<< "$release_json"
+
+      - name: Verify GitHub release attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release verify "$TAG" --repo "${GITHUB_REPOSITORY}"
+
+      - name: Cleanup draft release after failure
+        if: ${{ (failure() || cancelled()) && steps.prepare.outputs.created == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+
+          release_json="$(gh release view "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json isDraft,isImmutable 2>/dev/null)"
+
+          if [[ -z "$release_json" ]]; then
+            echo "Release $TAG is not readable; leaving state untouched."
+            exit 0
+          fi
+
+          is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+          is_immutable="$(jq -r '.isImmutable' <<< "$release_json")"
+
+          if [[ "$is_draft" == "true" && "$is_immutable" != "true" ]]; then
+            echo "Cleaning up draft release $TAG."
+            # Never delete a pre-existing tag as part of draft cleanup.
+            gh release delete "$TAG" --repo "${GITHUB_REPOSITORY}" --yes || true
+          else
+            echo "Release $TAG is published or immutable; refusing destructive cleanup."
+          fi
